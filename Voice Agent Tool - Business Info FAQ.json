@@ -1,0 +1,560 @@
+{
+  "name": "Voice Agent Tool - Business Info FAQ",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "check-availability",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "5cb95187-3483-4bd4-aed9-891ccdf73a39",
+      "name": "Webhook - check_availability_tool",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        416,
+        560
+      ],
+      "webhookId": "e9406021-baa5-4361-a2b7-c766b188d272"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\n\n// Safely extract arguments and toolCallId (handling both flat and nested Vapi/Dograh formats)\nlet args = body;\nlet toolCallId = body.toolCallId || \"unknown\";\n\nif (body.message && body.message.toolWithToolCallList && body.message.toolWithToolCallList.length > 0) {\n    const toolCall = body.message.toolWithToolCallList[0].toolCall;\n    toolCallId = toolCall.id;\n    args = toolCall.function.arguments || {};\n} else if (body.message && body.message.toolCallList && body.message.toolCallList.length > 0) {\n    const toolCall = body.message.toolCallList[0];\n    toolCallId = toolCall.id;\n    args = toolCall.function ? toolCall.function.arguments : (toolCall.arguments || {});\n}\n\n// 1. Safely grab Date, Time, and Duration with fallbacks\nlet dateStr = args.date || args.day || \"\";\nlet timeStr = args.time || args.hour || \"\";\nlet durationMinutes = args.duration_minutes || args.duration || 30;\n\n// 2. Prevent Crashes: If AI forgets the date, default to today\nif (!dateStr) {\n    const today = new Date();\n    const yyyy = today.getFullYear();\n    const mm = String(today.getMonth() + 1).padStart(2, '0');\n    const dd = String(today.getDate()).padStart(2, '0');\n    dateStr = `${yyyy}-${mm}-${dd}`;\n}\n\n// 3. Prevent Crashes: If AI forgets the time, default to 9:00 AM\nif (!timeStr) {\n    timeStr = '09:00';\n}\n\n// 4. Safely parse the date and time\nlet year, month, day, hour, minute;\n\ntry {\n    // Split date (handles if AI accidentally sends a full ISO string with a 'T')\n    [year, month, day] = dateStr.split('T')[0].split('-').map(Number);\n    \n    // Clean up the time string (strips letters but keeps numbers and colons)\n    let cleanTime = timeStr.replace(/[^0-9:]/g, ''); \n    let timeParts = cleanTime.split(':');\n    hour = Number(timeParts[0]);\n    minute = timeParts[1] ? Number(timeParts[1]) : 0;\n    \n    // Auto-fix if AI sends \"2 PM\" instead of \"14:00\"\n    if (timeStr.toLowerCase().includes('pm') && hour < 12) hour += 12;\n    if (timeStr.toLowerCase().includes('am') && hour === 12) hour = 0;\n\n} catch (e) {\n    // Ultimate Fallback: If the AI sends absolute gibberish, use safe numbers so the node doesn't crash\n    const d = new Date();\n    year = d.getFullYear();\n    month = d.getMonth() + 1;\n    day = d.getDate();\n    hour = 9;\n    minute = 0;\n}\n\n// 5. Generate the final exact timestamps\nconst requestedStart = new Date(year, month - 1, day, hour, minute);\nconst requestedEnd = new Date(requestedStart.getTime() + durationMinutes * 60000);\n\n// Business hours window for that specific day (9 AM to 5 PM)\nconst businessStart = new Date(year, month - 1, day, 9, 0);\nconst businessEnd = new Date(year, month - 1, day, 17, 0);\n\nreturn [{\n  json: {\n    toolCallId: toolCallId,\n    requestedStartISO: requestedStart.toISOString(),\n    requestedEndISO: requestedEnd.toISOString(),\n    businessStartISO: businessStart.toISOString(),\n    businessEndISO: businessEnd.toISOString(),\n    durationMinutes: durationMinutes,\n    date: dateStr,\n    time: timeStr\n  }\n}];"
+      },
+      "id": "c954c49c-beaa-45c6-bb42-c95dfec76345",
+      "name": "Code - Parse Requested Slot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        656,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "afnanabbasi.1.888@gmail.com",
+          "mode": "list",
+          "cachedResultName": "afnanabbasi.1.888@gmail.com"
+        },
+        "timeMin": "={{ $json.businessStartISO }}",
+        "timeMax": "={{ $json.businessEndISO }}",
+        "options": {
+          "orderBy": "startTime"
+        }
+      },
+      "id": "763a352b-5296-40e8-abb9-8ab2fb684d25",
+      "name": "Google Calendar - Get Day's Events",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        928,
+        560
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "7DgqlOgfSJsvDAyi",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n// Safely handle if Google Calendar returns zero events\nconst events = items.length > 0 && items[0].json && Object.keys(items[0].json).length > 0 ? items.map(i => i.json) : [];\n\n// Grab the parsed data and the crucial toolCallId from your first code node\nconst parsed = $('Code - Parse Requested Slot').first().json || {};\nconst toolCallId = parsed.toolCallId || \"unknown\";\n\nconst reqStart = new Date(parsed.requestedStartISO);\nconst reqEnd = new Date(parsed.requestedEndISO);\nconst bizStart = new Date(parsed.businessStartISO);\nconst bizEnd = new Date(parsed.businessEndISO);\nconst durationMs = (parsed.durationMinutes || 30) * 60000;\n\n// Safely map out the busy times on the calendar\nconst busy = events\n  .filter(e => e && e.start && e.end)\n  .map(e => ({ \n    start: new Date(e.start.dateTime || e.start.date), \n    end: new Date(e.end.dateTime || e.end.date) \n  }))\n  .sort((a, b) => a.start - b.start);\n\n// Function to check if two time blocks overlap\nfunction overlaps(s1, e1, s2, e2) { \n    return s1 < e2 && s2 < e1; \n}\n\n// 1. Check if they asked for a time when you are closed\nlet isOutsideBusinessHours = false;\nif (reqStart < bizStart || reqEnd > bizEnd) {\n    isOutsideBusinessHours = true;\n}\n\n// 2. Check if the requested slot is free\nconst requestedIsFree = !isOutsideBusinessHours && !busy.some(b => overlaps(reqStart, reqEnd, b.start, b.end));\n\n// Helper: Format time to 12-hour AM/PM so the AI reads it naturally (e.g., \"2:15 PM\")\nfunction formatTime(d) {\n    let h = d.getHours();\n    let m = d.getMinutes();\n    const ampm = h >= 12 ? 'PM' : 'AM';\n    h = h % 12;\n    h = h ? h : 12; // the hour '0' should be '12'\n    m = m < 10 ? '0' + m : m;\n    return `${h}:${m} ${ampm}`;\n}\n\n// 3. Find up to 2 alternative open slots just in case\nconst openSlots = [];\nlet cursor = new Date(bizStart);\nconst now = new Date();\n\n// Prevent the bot from suggesting times that already passed earlier today\nif (cursor < now) {\n    cursor = now;\n    // Round up to the next 15-minute mark\n    const remainder = 15 - (cursor.getMinutes() % 15);\n    cursor = new Date(cursor.getTime() + remainder * 60000);\n}\n\nwhile (cursor.getTime() + durationMs <= bizEnd.getTime() && openSlots.length < 2) {\n  const slotEnd = new Date(cursor.getTime() + durationMs);\n  const clashes = busy.some(b => overlaps(cursor, slotEnd, b.start, b.end));\n  \n  if (!clashes) {\n    openSlots.push(formatTime(cursor));\n    cursor = new Date(cursor.getTime() + durationMs);\n  } else {\n    cursor = new Date(cursor.getTime() + 15 * 60000); // Fast-forward 15 mins and check again\n  }\n}\n\n// 4. Construct a highly conversational answer to feed directly to Dograh\nlet message = \"\";\nif (isOutsideBusinessHours) {\n    message = `I'm sorry, but ${formatTime(reqStart)} is outside our normal business hours. `;\n    if (openSlots.length > 0) {\n        message += `Our available openings that day are ${openSlots.join(' or ')}.`;\n    } else {\n        message += `We don't have any openings available that day.`;\n    }\n} else if (requestedIsFree) {\n    message = `Yes, ${formatTime(reqStart)} on that date is completely available! Would you like me to go ahead and lock that in for you?`;\n} else {\n    message = `I'm sorry, but ${formatTime(reqStart)} is already booked. `;\n    if (openSlots.length > 0) {\n        message += `The next available times on that day are ${openSlots.join(' or ')}.`;\n    } else {\n        message += `We actually don't have any other openings left for that day.`;\n    }\n}\n\n// 5. Return the payload matching Dograh/Vapi's requirements\nreturn [{\n  json: {\n    toolCallId: toolCallId,\n    available: requestedIsFree,\n    date: parsed.date,\n    requested_time: parsed.time,\n    next_available_slots: openSlots,\n    result: message // Dograh will read this exact string aloud\n  }\n}];"
+      },
+      "id": "c97920c9-cfb2-4251-9e5a-c3317c5aa966",
+      "name": "Code - Determine Availability",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1184,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "20f7a622-a377-4c53-ae3e-5497bfaa4ad7",
+      "name": "Respond - Return Availability to Voice Agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "book-appointment",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "114ff101-faae-4092-9eb4-c4ed3dde4544",
+      "name": "Webhook - book_appointment_tool",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        416,
+        864
+      ],
+      "webhookId": "7c231c2c-333f-4e84-a344-2d8581f875b8"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Expected body: { \"name\": \"John Smith\", \"phone\": \"+1555...\", \"date\": \"2026-07-11\", \"time\": \"15:30\", \"duration_minutes\": 30 }\nconst body = $input.first().json.body;\nconst { name, phone, date, time } = body;\nconst durationMinutes = body.duration_minutes || 30;\n\nconst [year, month, day] = date.split('-').map(Number);\nconst [hour, minute] = time.split(':').map(Number);\n\nconst start = new Date(year, month - 1, day, hour, minute);\nconst end = new Date(start.getTime() + durationMinutes * 60000);\n\nreturn [{\n  json: {\n    customer_name: name,\n    customer_phone: phone,\n    date, time,\n    startISO: start.toISOString(),\n    endISO: end.toISOString()\n  }\n}];"
+      },
+      "id": "5ff55adb-131f-4df0-8625-e839ec7bb70f",
+      "name": "Code - Parse Booking Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        864
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "afnanabbasi.1.888@gmail.com",
+          "mode": "list",
+          "cachedResultName": "afnanabbasi.1.888@gmail.com"
+        },
+        "timeMin": "={{ $json.startISO }}",
+        "timeMax": "={{ $json.endISO }}",
+        "options": {}
+      },
+      "id": "ca118e8a-3970-4d7e-ba8f-95893f155dc4",
+      "name": "Google Calendar - Conflict Check",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        912,
+        864
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "7DgqlOgfSJsvDAyi",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $items().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c4f9f8f7-509c-4f3b-93e4-82864159720e",
+      "name": "IF - Slot Already Taken",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1168,
+        864
+      ]
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "en.pk#holiday@group.v.calendar.google.com",
+          "mode": "list",
+          "cachedResultName": "Holidays in Pakistan"
+        },
+        "start": "={{ $('Code - Parse Booking Request').item.json.startISO }}",
+        "end": "={{ $('Code - Parse Booking Request').item.json.endISO }}",
+        "additionalFields": {
+          "description": "=Booked via AI voice receptionist. Phone: {{ $('Code - Parse Booking Request').item.json.customer_phone }}",
+          "summary": "=Appointment - {{ $('Code - Parse Booking Request').item.json.customer_name }}"
+        }
+      },
+      "id": "a9b0f971-438e-42e6-b834-6545b25858c6",
+      "name": "Google Calendar - Create Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1392,
+        992
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "7DgqlOgfSJsvDAyi",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Code - Parse Booking Request').first().json;\nconst created = $input.first().json;\n\nreturn [{\n  json: {\n    success: true,\n    confirmation_id: created.id,\n    name: parsed.customer_name,\n    date: parsed.date,\n    time: parsed.time,\n    message: `Appointment confirmed for ${parsed.customer_name} on ${parsed.date} at ${parsed.time}.`\n  }\n}];"
+      },
+      "id": "8b637993-88ea-4a1d-a158-d84347cf377e",
+      "name": "Code - Format Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        992
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Code - Parse Booking Request').first().json;\nreturn [{\n  json: {\n    success: false,\n    reason: 'slot_taken',\n    date: parsed.date,\n    time: parsed.time,\n    message: `Sorry, ${parsed.time} on ${parsed.date} just got booked. Please ask the caller for another time.`\n  }\n}];"
+      },
+      "id": "11187a74-da85-4c0a-8bc0-82bbe9a30356",
+      "name": "Code - Format Conflict Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "0b11b833-9428-4c6b-82d9-6820713eadf6",
+      "name": "Respond - Return Booking Result to Voice Agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1840,
+        896
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "business-info",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9e3ae386-657a-467f-b7ff-2687dac86009",
+      "name": "Webhook - business_info_tool",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        416,
+        1232
+      ],
+      "webhookId": "283b1a8e-5da3-4228-9145-1295fd0c25dc"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\n\n// Grab the query directly from the root of the body (based on your screenshot)\nlet query = body.query || body.info_type || body.topic || \"\";\n\n// Fallback: If the name changes, just grab the first string it finds in the body\nif (!query) {\n    const values = Object.values(body);\n    query = values.find(val => typeof val === 'string') || \"\";\n}\n\nquery = query.toLowerCase();\n\nconst kb = {\n  hours: \"We're open Monday to Friday, 9 AM to 5 PM, and closed on weekends.\",\n  location: \"We're located at 123 Main Street, Suite 4.\",\n  services: \"We offer haircuts, coloring, and styling consultations.\",\n  pricing: \"Pricing varies by service. I can have someone call you back with exact pricing, or you can book a consultation.\"\n};\n\nlet answer = \"I don't have that information, but I can have a team member follow up with you.\";\n\n// Match the keywords to the knowledge base\nif (query.includes('hour') || query.includes('open') || query.includes('time') || query.includes('opening')) {\n    answer = kb.hours;\n} else if (query.includes('location') || query.includes('address') || query.includes('where') || query.includes('locate')) {\n    answer = kb.location;\n} else if (query.includes('service') || query.includes('offer') || query.includes('hair')) {\n    answer = kb.services;\n} else if (query.includes('price') || query.includes('cost') || query.includes('much')) {\n    answer = kb.pricing;\n}\n\nreturn [{\n  json: {\n    // Pass back the toolCallId if Dograh provides it, otherwise default to \"unknown\"\n    toolCallId: body.toolCallId || \"unknown\",\n    answer: answer\n  }\n}];"
+      },
+      "id": "2b13702b-5ac7-4e4d-bd0d-314c72b869d6",
+      "name": "Code - Knowledge Base Lookup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"results\": [\n    {\n      \"toolCallId\": \"{{ $json.toolCallId }}\",\n      \"result\": \"{{ $json.answer }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "f9bd9c51-63cc-445e-b3ba-246dfa059d2e",
+      "name": "Respond - Return Answer to Voice Agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        944,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "content": " \n**check-availability** ",
+        "height": 80,
+        "width": 150
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        128,
+        592
+      ],
+      "typeVersion": 1,
+      "id": "ac7a6f38-aa87-4e58-a990-ffe4fcf0c714",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": " \n**book-appointment** ",
+        "height": 80,
+        "width": 150
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        80,
+        896
+      ],
+      "typeVersion": 1,
+      "id": "4f96c131-5f0d-455e-b848-5fc8bccd1bb8",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": " \n**business-info** ",
+        "height": 80,
+        "width": 150
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        144,
+        1248
+      ],
+      "typeVersion": 1,
+      "id": "fd503c4e-f586-490c-b6eb-a8dfa01d4049",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 224,
+        "width": 1648,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        64,
+        512
+      ],
+      "typeVersion": 1,
+      "id": "296f4698-cf1e-4375-8dc1-f6ed47e6fb1d",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 400,
+        "width": 1984,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        64,
+        768
+      ],
+      "typeVersion": 1,
+      "id": "3debef29-45a3-42c0-b17f-a268983e305a",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 224,
+        "width": 1088,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        96,
+        1200
+      ],
+      "typeVersion": 1,
+      "id": "4b6451f5-6bf1-485a-b880-14d96d6e597a",
+      "name": "Sticky Note5"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - check_availability_tool": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Requested Slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Requested Slot": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar - Get Day's Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar - Get Day's Events": {
+      "main": [
+        [
+          {
+            "node": "Code - Determine Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Determine Availability": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Availability to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - book_appointment_tool": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Booking Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Booking Request": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar - Conflict Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar - Conflict Check": {
+      "main": [
+        [
+          {
+            "node": "IF - Slot Already Taken",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Slot Already Taken": {
+      "main": [
+        [
+          {
+            "node": "Code - Format Conflict Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Calendar - Create Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar - Create Event": {
+      "main": [
+        [
+          {
+            "node": "Code - Format Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Format Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Booking Result to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Format Conflict Response": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Booking Result to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - business_info_tool": {
+      "main": [
+        [
+          {
+            "node": "Code - Knowledge Base Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Knowledge Base Lookup": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Answer to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "b9683996-d19e-49f1-afe9-8978ab1c6e87",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "baab2424fa7ffe6fa1dabe3371431902d14a17d94c997e1491674bf6df345811"
+  },
+  "nodeGroups": [],
+  "id": "2GpupaNvj2ixgeph",
+  "tags": []
+}
