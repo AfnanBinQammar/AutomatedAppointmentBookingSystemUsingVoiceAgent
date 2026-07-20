@@ -1,5 +1,5 @@
 
-readme_content = """# 🤖 AI Front Desk Receptionist
+## 🤖 AI Front Desk Receptionist
 
 An intelligent voice-powered receptionist built with **n8n**, **Vapi**, and **Google Calendar** that handles appointment bookings, availability checks, and business inquiries — 24/7.
 
@@ -15,9 +15,6 @@ An intelligent voice-powered receptionist built with **n8n**, **Vapi**, and **Go
 - [Setup Guide](#setup-guide)
 - [Workflow Configuration](#workflow-configuration)
 - [Vapi Tool Configuration](#vapi-tool-configuration)
-- [Testing](#testing)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
 
 ---
 
