@@ -1,0 +1,675 @@
+{
+  "name": "Voice Agent Tool - Business Info FAQ",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "check-availability",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "5cb95187-3483-4bd4-aed9-891ccdf73a39",
+      "name": "Webhook - check_availability_tool",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        416,
+        560
+      ],
+      "webhookId": "e9406021-baa5-4361-a2b7-c766b188d272"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\n\n// Extract arguments and toolCallId\nlet args = body;\nlet toolCallId = body.toolCallId || \"unknown\";\n\nif (body.message && body.message.toolWithToolCallList && body.message.toolWithToolCallList.length > 0) {\n    const toolCall = body.message.toolWithToolCallList[0].toolCall;\n    toolCallId = toolCall.id;\n    args = toolCall.function.arguments || {};\n} else if (body.message && body.message.toolCallList && body.message.toolCallList.length > 0) {\n    const toolCall = body.message.toolCallList[0];\n    toolCallId = toolCall.id;\n    args = toolCall.function ? toolCall.function.arguments : (toolCall.arguments || {});\n}\n\n// Handle stringified arguments\nif (typeof args === 'string') {\n    try {\n        args = JSON.parse(args);\n    } catch (e) {\n        args = {};\n    }\n}\n\nlet dateStr = args.date || args.day || \"\";\nlet timeStr = (args.time || args.hour || \"\").toString().trim();\nlet dateTimeStr = args.dateTime || args.datetime || args.date_time || \"\";\nlet durationMinutes = Number(args.duration_minutes || args.duration || 30);\n\nlet year, month, day, hour, minute;\nlet parsedFromDateTime = false;\n\n// Helper\nconst pad = (num) => String(num).padStart(2, '0');\n\n// 1. Try to parse from combined dateTime string\nif (dateTimeStr) {\n    try {\n        let cleanDT = dateTimeStr.replace(/(st|nd|rd|th)\\b/gi, '').replace(/\\bat\\b/gi, '').trim();\n        \n        // Handle relative dates\n        const now = new Date();\n        const todayStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;\n        \n        if (cleanDT.toLowerCase().includes('today')) {\n            cleanDT = cleanDT.replace(/today/gi, todayStr);\n        } else if (cleanDT.toLowerCase().includes('tomorrow')) {\n            const tomorrow = new Date(now);\n            tomorrow.setDate(tomorrow.getDate() + 1);\n            const tomorrowStr = `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth()+1)}-${pad(tomorrow.getDate())}`;\n            cleanDT = cleanDT.replace(/tomorrow/gi, tomorrowStr);\n        }\n        \n        // Convert \"3 PM\" to \"3:00 PM\" for better parsing\n        cleanDT = cleanDT.replace(/\\b(\\d{1,2})\\s*(AM|PM)\\b/gi, '$1:00 $2');\n        \n        let parsedDate = new Date(cleanDT);\n        \n        // Force year to 2026 if it's in the past\n        if (parsedDate.getFullYear() < 2026) {\n            parsedDate.setFullYear(2026);\n        }\n\n        if (!isNaN(parsedDate.getTime())) {\n            year = parsedDate.getFullYear();\n            month = parsedDate.getMonth() + 1;\n            day = parsedDate.getDate();\n            hour = parsedDate.getHours();\n            minute = parsedDate.getMinutes();\n            parsedFromDateTime = true;\n            \n            dateStr = `${year}-${pad(month)}-${pad(day)}`;\n            timeStr = `${pad(hour)}:${pad(minute)}`;\n        }\n    } catch (e) {\n        parsedFromDateTime = false;\n    }\n}\n\n// 2. Fallback to parsing separate date & time parameters\nif (!parsedFromDateTime) {\n    \n    // Try to extract day name from dateTimeStr\n    let targetDate = new Date();\n    let dayNameMatched = false;\n    \n    if (dateTimeStr) {\n        const lowerDT = dateTimeStr.toLowerCase();\n        const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];\n        const dayIndex = dayNames.findIndex(d => lowerDT.includes(d));\n        \n        if (dayIndex !== -1) {\n            // Found a day name — calculate the next occurrence\n            const today = new Date();\n            const todayDay = today.getDay();\n            let daysUntil = dayIndex - todayDay;\n            if (daysUntil <= 0) daysUntil += 7; // Next week if today or past\n            \n            targetDate = new Date(today);\n            targetDate.setDate(today.getDate() + daysUntil);\n            dayNameMatched = true;\n        } else if (lowerDT.includes('tomorrow')) {\n            targetDate = new Date();\n            targetDate.setDate(targetDate.getDate() + 1);\n        } else if (lowerDT.includes('today')) {\n            targetDate = new Date();\n        }\n    }\n    \n    if (!dateStr) {\n        const yyyy = targetDate.getFullYear();\n        const mm = String(targetDate.getMonth() + 1).padStart(2, '0');\n        const dd = String(targetDate.getDate()).padStart(2, '0');\n        dateStr = `${yyyy}-${mm}-${dd}`;\n    }\n\n    // Extract time from dateTimeStr if available\n    if (!timeStr && dateTimeStr) {\n        const timeMatch = dateTimeStr.match(/(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm|AM|PM)?/i);\n        if (timeMatch) {\n            let h = parseInt(timeMatch[1]);\n            let m = timeMatch[2] ? parseInt(timeMatch[2]) : 0;\n            let ampm = timeMatch[3] ? timeMatch[3].toLowerCase() : '';\n            if (ampm === 'pm' && h < 12) h += 12;\n            if (ampm === 'am' && h === 12) h = 0;\n            timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;\n        }\n    }\n\n    if (!timeStr) {\n        timeStr = '09:00';\n    }\n\n    try {\n        [year, month, day] = dateStr.split('T')[0].split('-').map(Number);\n        \n        const normalizedTime = timeStr.toLowerCase().replace('om', 'pm');\n        const isPM = normalizedTime.includes('pm');\n        const isAM = normalizedTime.includes('am');\n\n        let cleanTime = normalizedTime.replace(/[^0-9:]/g, ''); \n        let timeParts = cleanTime.split(':');\n        hour = Number(timeParts[0]);\n        minute = timeParts[1] ? Number(timeParts[1]) : 0;\n        \n        if (isPM && hour < 12) {\n            hour += 12;\n        } else if (isAM && hour === 12) {\n            hour = 0;\n        }\n    } catch (e) {\n        const d = new Date();\n        year = d.getFullYear(); month = d.getMonth() + 1; day = d.getDate();\n        hour = 9; minute = 0;\n    }\n}\n\n// 3. Determine Day of the Week\nlet dayOfWeek = 1;\ntry {\n    const parsedDate = new Date(year, month - 1, day);\n    dayOfWeek = parsedDate.getDay();\n} catch (e) {}\n\nconst startISO = `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00.000Z`;\n\nlet endHour = hour;\nlet endMinute = minute + durationMinutes;\nif (endMinute >= 60) {\n    endHour += Math.floor(endMinute / 60);\n    endMinute = endMinute % 60;\n}\nconst endISO = `${year}-${pad(month)}-${pad(day)}T${pad(endHour)}:${pad(endMinute)}:00.000Z`;\n\n// Business hours check\nconst isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);\nconst isOutsideTime = (hour < 9 || hour >= 17);\nconst isOutsideHours = isWeekend || isOutsideTime;\n\n// Business day range for calendar query\nconst businessStartISO = `${year}-${pad(month)}-${pad(day)}T09:00:00.000Z`;\nconst businessEndISO = `${year}-${pad(month)}-${pad(day)}T17:00:00.000Z`;\n\nreturn [{\n  json: {\n    toolCallId: toolCallId,\n    date: dateStr,\n    time: timeStr,\n    startISO: startISO,\n    endISO: endISO,\n    businessStartISO: businessStartISO,\n    businessEndISO: businessEndISO,\n    outsideBusinessHours: isOutsideHours,\n    isWeekend: isWeekend\n  }\n}];"
+      },
+      "id": "c954c49c-beaa-45c6-bb42-c95dfec76345",
+      "name": "Code - Parse Requested Slot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        656,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "afnanabbasi.1.888@gmail.com",
+          "mode": "list",
+          "cachedResultName": "afnanabbasi.1.888@gmail.com"
+        },
+        "timeMin": "={{ $json.businessStartISO }}",
+        "timeMax": "={{ $json.businessEndISO }}",
+        "options": {
+          "orderBy": "startTime"
+        }
+      },
+      "id": "763a352b-5296-40e8-abb9-8ab2fb684d25",
+      "name": "Google Calendar - Get Day's Events",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        928,
+        560
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": false,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "7DgqlOgfSJsvDAyi",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Code - Parse Requested Slot').first().json || {};\nconst toolCallId = parsed.toolCallId || \"unknown\";\nconst outsideHours = parsed.outsideBusinessHours || false;\nconst isWeekend = parsed.isWeekend || false;\n\n// 1. Gather Google Calendar events and filter out empty items\nlet events = [];\ntry {\n    events = $input.all()\n        .map(item => item.json)\n        .filter(event => {\n            if (!event || Object.keys(event).length === 0) return false;\n            const hasStart = event.start || event.startISO || (event.start && event.start.dateTime);\n            return !!hasStart;\n        });\n} catch (e) {\n    events = [];\n}\n\nlet displayTime = parsed.time || \"that time\";\nlet displayDate = parsed.date || \"that day\";\n\n// Helper: 12-hour formatting\nif (parsed.time && parsed.time.includes(':')) {\n    try {\n        const [h, m] = parsed.time.split(':').map(Number);\n        const ampm = h >= 12 ? 'PM' : 'AM';\n        const displayHour = h % 12 || 12;\n        const displayMin = m < 10 ? '0' + m : m;\n        displayTime = `${displayHour}:${displayMin} ${ampm}`;\n    } catch (e) {}\n}\n\n// Helper: Friendly date formatting\nif (parsed.date && parsed.date.includes('-')) {\n    try {\n        const months = [\n            \"January\", \"February\", \"March\", \"April\", \"May\", \"June\", \n            \"July\", \"August\", \"September\", \"October\", \"November\", \"December\"\n        ];\n        const [y, m, d] = parsed.date.split('-').map(Number);\n        let suffix = \"th\";\n        if (d === 1 || d === 21 || d === 31) suffix = \"st\";\n        else if (d === 2 || d === 22) suffix = \"nd\";\n        else if (d === 3 || d === 23) suffix = \"rd\";\n        displayDate = `${months[m - 1]} ${d}${suffix}`;\n    } catch (e) {}\n}\n\n// 2. Outside Business Hours Block\nif (outsideHours) {\n    let closedMessage = `I'm sorry, but ${displayTime} is outside of our regular business hours. We are open from 9:00 AM to 5:00 PM. Is there another time you'd like to try?`;\n    \n    // Custom message specifically for weekends\n    if (isWeekend) {\n        closedMessage = `I'm sorry, but we are completely closed on weekends. Our business hours are Monday through Friday, 9:00 AM to 5:00 PM. Is there a weekday you would like to book instead?`;\n    }\n\n    return [{\n        json: {\n            toolCallId: toolCallId,\n            available: false,\n            result: closedMessage\n        }\n    }];\n}\n\n// 3. Conflict Detection Logic\nlet hasConflict = false;\nconst reqStart = new Date(parsed.startISO).getTime();\nconst reqEnd = new Date(parsed.endISO).getTime();\n\nif (!isNaN(reqStart) && !isNaN(reqEnd)) {\n    for (const event of events) {\n        const eventStartStr = event.start ? (event.start.dateTime || event.start) : event.startISO;\n        const eventEndStr = event.end ? (event.end.dateTime || event.end) : event.endISO;\n        \n        if (!eventStartStr || !eventEndStr) continue;\n\n        const evStart = new Date(eventStartStr).getTime();\n        const evEnd = new Date(eventEndStr).getTime();\n\n        if (isNaN(evStart) || isNaN(evEnd)) continue;\n\n        if (reqStart < evEnd && reqEnd > evStart) {\n            hasConflict = true;\n            break;\n        }\n    }\n}\n\n// 4. Construct response\nlet conversationalMessage = \"\";\nif (hasConflict) {\n    conversationalMessage = `I'm sorry, but ${displayTime} on ${displayDate} is actually already booked. Is there another day or time that works for you?`;\n} else {\n    conversationalMessage = `Yes, ${displayTime} on ${displayDate} is completely open! Would you like me to go ahead and book that for you?`;\n}\n\nreturn [{\n  json: {\n    toolCallId: toolCallId,\n    result: conversationalMessage\n  }\n}];"
+      },
+      "id": "c97920c9-cfb2-4251-9e5a-c3317c5aa966",
+      "name": "Code - Determine Availability",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1184,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ results: [{ toolCallId: $json.toolCallId, result: $json.result }] }) }}",
+        "options": {}
+      },
+      "id": "20f7a622-a377-4c53-ae3e-5497bfaa4ad7",
+      "name": "Respond - Return Availability to Voice Agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "book-appointment",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "114ff101-faae-4092-9eb4-c4ed3dde4544",
+      "name": "Webhook - book_appointment_tool",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        416,
+        864
+      ],
+      "webhookId": "7c231c2c-333f-4e84-a344-2d8581f875b8"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Grab the raw incoming body\nconst body = $input.first().json.body || $input.first().json || {};\n\n// 2. Extract arguments and toolCallId\nlet args = body;\nlet toolCallId = body.toolCallId || \"unknown\";\n\nif (body.message && body.message.toolWithToolCallList && body.message.toolWithToolCallList.length > 0) {\n    const toolCall = body.message.toolWithToolCallList[0].toolCall;\n    toolCallId = toolCall.id;\n    args = toolCall.function.arguments || {};\n} else if (body.message && body.message.toolCallList && body.message.toolCallList.length > 0) {\n    const toolCall = body.message.toolCallList[0];\n    toolCallId = toolCall.id;\n    args = toolCall.function ? toolCall.function.arguments : (toolCall.arguments || {});\n}\n\n// Handle stringified arguments\nif (typeof args === 'string') {\n    try {\n        args = JSON.parse(args);\n    } catch (e) {\n        args = {};\n    }\n}\n\n// 3. Extract booking details\nlet name = args.name || args.customer_name || args.customerName || \"Guest\";\nlet phone = args.phone || args.phoneNumber || args.phone_number || \"\";\n\n// 4. Extract and clean Date and Time strings\nlet dateStr = args.date || args.day || \"\";\nlet timeStr = (args.time || args.hour || \"\").toString().trim();\nlet dateTimeStr = args.dateTime || args.datetime || args.date_time || \"\";\nlet durationMinutes = Number(args.duration_minutes || args.duration || 30);\n\nlet year, month, day, hour, minute;\nlet parsedSuccessfully = false;\n\nconst pad = (num) => String(num).padStart(2, '0');\n\n// TIMEZONE CONFIGURATION - Change this to your timezone offset\nconst TIMEZONE_OFFSET_HOURS = 5;\n\n// Helper to adjust hour for timezone offset\nfunction adjustForTimezone(y, m, d, h, min, offset) {\n    let adjustedHour = h - offset;\n    let adjustedDay = d;\n    let adjustedMonth = m;\n    let adjustedYear = y;\n    \n    if (adjustedHour < 0) {\n        adjustedHour += 24;\n        adjustedDay -= 1;\n        if (adjustedDay < 1) {\n            adjustedMonth -= 1;\n            if (adjustedMonth < 1) {\n                adjustedMonth = 12;\n                adjustedYear -= 1;\n            }\n            adjustedDay = new Date(adjustedYear, adjustedMonth, 0).getDate();\n        }\n    } else if (adjustedHour >= 24) {\n        adjustedHour -= 24;\n        adjustedDay += 1;\n        const lastDayOfMonth = new Date(adjustedYear, adjustedMonth, 0).getDate();\n        if (adjustedDay > lastDayOfMonth) {\n            adjustedDay = 1;\n            adjustedMonth += 1;\n            if (adjustedMonth > 12) {\n                adjustedMonth = 1;\n                adjustedYear += 1;\n            }\n        }\n    }\n    \n    return {\n        year: adjustedYear,\n        month: adjustedMonth,\n        day: adjustedDay,\n        hour: adjustedHour,\n        minute: min\n    };\n}\n\n// Attempt parsing with combined dateTime string first\nif (dateTimeStr) {\n    try {\n        let cleanDT = dateTimeStr.replace(/(st|nd|rd|th)\\b/gi, '').replace(/\\bat\\b/gi, '').trim();\n        \n        // Handle relative dates\n        const now = new Date();\n        const todayStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;\n        \n        if (cleanDT.toLowerCase().includes('today')) {\n            cleanDT = cleanDT.replace(/today/gi, todayStr);\n        } else if (cleanDT.toLowerCase().includes('tomorrow')) {\n            const tomorrow = new Date(now);\n            tomorrow.setDate(tomorrow.getDate() + 1);\n            const tomorrowStr = `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth()+1)}-${pad(tomorrow.getDate())}`;\n            cleanDT = cleanDT.replace(/tomorrow/gi, tomorrowStr);\n        }\n        \n        // Handle day names\n        const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];\n        const lowerDT = cleanDT.toLowerCase();\n        const dayIndex = dayNames.findIndex(d => lowerDT.includes(d));\n        \n        if (dayIndex !== -1) {\n            const today = new Date();\n            const todayDay = today.getDay();\n            let daysUntil = dayIndex - todayDay;\n            if (daysUntil <= 0) daysUntil += 7;\n            \n            const targetDate = new Date(today);\n            targetDate.setDate(today.getDate() + daysUntil);\n            const targetStr = `${targetDate.getFullYear()}-${pad(targetDate.getMonth()+1)}-${pad(targetDate.getDate())}`;\n            cleanDT = cleanDT.replace(new RegExp(dayNames[dayIndex], 'gi'), targetStr);\n        }\n        \n        cleanDT = cleanDT.replace(/\\b(\\d{1,2})\\s*(AM|PM)\\b/gi, '$1:00 $2');\n\n        let parsedDate = new Date(cleanDT);\n        \n        if (parsedDate.getFullYear() < 2026) {\n            parsedDate.setFullYear(2026);\n        }\n\n        if (!isNaN(parsedDate.getTime())) {\n            year = parsedDate.getFullYear();\n            month = parsedDate.getMonth() + 1;\n            day = parsedDate.getDate();\n            hour = parsedDate.getHours();\n            minute = parsedDate.getMinutes();\n            parsedSuccessfully = true;\n            \n            dateStr = `${year}-${pad(month)}-${pad(day)}`;\n            timeStr = `${pad(hour)}:${pad(minute)}`;\n        }\n    } catch (e) {\n        parsedSuccessfully = false;\n    }\n}\n\n// Fallback to individual date and time fields\nif (!parsedSuccessfully) {\n    if (!dateStr) {\n        const today = new Date();\n        year = today.getFullYear() < 2026 ? 2026 : today.getFullYear();\n        month = today.getMonth() + 1;\n        day = today.getDate();\n        dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;\n    } else {\n        try {\n            [year, month, day] = dateStr.split('T')[0].split('-').map(Number);\n        } catch(e) {\n            const d = new Date();\n            year = d.getFullYear(); month = d.getMonth() + 1; day = d.getDate();\n        }\n    }\n\n    if (!timeStr && dateTimeStr) {\n        const timeMatch = dateTimeStr.match(/(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm|AM|PM)?/i);\n        if (timeMatch) {\n            let h = parseInt(timeMatch[1]);\n            let m = timeMatch[2] ? parseInt(timeMatch[2]) : 0;\n            let ampm = timeMatch[3] ? timeMatch[3].toLowerCase() : '';\n            if (ampm === 'pm' && h < 12) h += 12;\n            if (ampm === 'am' && h === 12) h = 0;\n            timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;\n        }\n    }\n\n    if (!timeStr) {\n        timeStr = '10:00';\n    }\n\n    try {\n        const normalizedTime = timeStr.toLowerCase().replace('om', 'pm');\n        const isPM = normalizedTime.includes('pm');\n        const isAM = normalizedTime.includes('am');\n\n        let cleanTime = normalizedTime.replace(/[^0-9:]/g, ''); \n        let timeParts = cleanTime.split(':');\n        hour = Number(timeParts[0]);\n        minute = timeParts[1] ? Number(timeParts[1]) : 0;\n        \n        if (isPM && hour < 12) {\n            hour += 12;\n        } else if (isAM && hour === 12) {\n            hour = 0;\n        }\n    } catch (e) {\n        hour = 10; minute = 0;\n    }\n}\n\n// Generate ISO strings with timezone adjustment\nconst adjustedStart = adjustForTimezone(year, month, day, hour, minute, TIMEZONE_OFFSET_HOURS);\nconst requestedStartISO = `${adjustedStart.year}-${pad(adjustedStart.month)}-${pad(adjustedStart.day)}T${pad(adjustedStart.hour)}:${pad(adjustedStart.minute)}:00.000Z`;\n\nlet endHour = hour;\nlet endMinute = minute + durationMinutes;\nif (endMinute >= 60) {\n    endHour += Math.floor(endMinute / 60);\n    endMinute = endMinute % 60;\n}\n\nconst adjustedEnd = adjustForTimezone(year, month, day, endHour, endMinute, TIMEZONE_OFFSET_HOURS);\nconst requestedEndISO = `${adjustedEnd.year}-${pad(adjustedEnd.month)}-${pad(adjustedEnd.day)}T${pad(adjustedEnd.hour)}:${pad(adjustedEnd.minute)}:00.000Z`;\n\n// Business hours (9 AM to 5 PM) - also adjusted for timezone\nconst adjustedBusinessStart = adjustForTimezone(year, month, day, 9, 0, TIMEZONE_OFFSET_HOURS);\nconst businessStartISO = `${adjustedBusinessStart.year}-${pad(adjustedBusinessStart.month)}-${pad(adjustedBusinessStart.day)}T${pad(adjustedBusinessStart.hour)}:${pad(adjustedBusinessStart.minute)}:00.000Z`;\n\nconst adjustedBusinessEnd = adjustForTimezone(year, month, day, 17, 0, TIMEZONE_OFFSET_HOURS);\nconst businessEndISO = `${adjustedBusinessEnd.year}-${pad(adjustedBusinessEnd.month)}-${pad(adjustedBusinessEnd.day)}T${pad(adjustedBusinessEnd.hour)}:${pad(adjustedBusinessEnd.minute)}:00.000Z`;\n\n// Business hours check\nlet dayOfWeek = 1;\ntry {\n    const parsedDate = new Date(year, month - 1, day);\n    dayOfWeek = parsedDate.getDay();\n} catch (e) {}\n\nconst isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);\nconst isOutsideTime = (hour < 9 || hour >= 17);\nconst outsideBusinessHours = isWeekend || isOutsideTime;\n\n// NEW: If outside business hours, output fake event data to force IF node to \"true\" branch\nlet hasConflict = false;\nif (outsideBusinessHours) {\n    hasConflict = true;\n}\n\nreturn [{\n  json: {\n    toolCallId: toolCallId,\n    name: name,\n    phone: phone,\n    requestedStartISO: requestedStartISO,\n    requestedEndISO: requestedEndISO,\n    businessStartISO: businessStartISO,\n    businessEndISO: businessEndISO,\n    durationMinutes: durationMinutes,\n    date: dateStr,\n    time: timeStr,\n    outsideBusinessHours: outsideBusinessHours,\n    isWeekend: isWeekend,\n    hasConflict: hasConflict  // NEW: forces IF node to true branch when outside hours\n  }\n}];"
+      },
+      "id": "5ff55adb-131f-4df0-8625-e839ec7bb70f",
+      "name": "Code - Parse Booking Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        864
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "afnanabbasi.1.888@gmail.com",
+          "mode": "list",
+          "cachedResultName": "afnanabbasi.1.888@gmail.com"
+        },
+        "timeMin": "={{$json.requestedStartISO}}",
+        "timeMax": "={{$json.requestedEndISO}}",
+        "options": {}
+      },
+      "id": "ca118e8a-3970-4d7e-ba8f-95893f155dc4",
+      "name": "Google Calendar - Conflict Check",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        880,
+        864
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "7DgqlOgfSJsvDAyi",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Code - Parse Booking Request').item.json.hasConflict ? 1 : 0 }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c4f9f8f7-509c-4f3b-93e4-82864159720e",
+      "name": "IF - Slot Already Taken",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        864
+      ]
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "afnanabbasi.1.888@gmail.com",
+          "mode": "list",
+          "cachedResultName": "afnanabbasi.1.888@gmail.com"
+        },
+        "start": "={{ $('Code - Parse Booking Request').item.json.requestedStartISO }}",
+        "end": "={{ $('Code - Parse Booking Request').item.json.requestedEndISO }}",
+        "additionalFields": {
+          "description": "=Booked via AI voice receptionist. Phone: {{ $('Code - Parse Booking Request').item.json.customer_phone }}",
+          "summary": "=\"=Appointment - {{ $('Code - Parse Booking Request').item.json.name }}\"\n\"=Booked via AI voice receptionist. Phone: {{ $('Code - Parse Booking Request').item.json.phone }}\""
+        }
+      },
+      "id": "a9b0f971-438e-42e6-b834-6545b25858c6",
+      "name": "Google Calendar - Create Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1392,
+        992
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "7DgqlOgfSJsvDAyi",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Code - Parse Booking Request').first().json || {};\nconst created = $input.first().json || {};\nconst toolCallId = parsed.toolCallId || \"unknown\";\n\nlet displayTime = parsed.time || \"that time\";\nlet displayDate = parsed.date || \"that day\";\n\n// Format time to 12-hour AM/PM\nif (parsed.time && parsed.time.includes(':')) {\n    try {\n        const [h, m] = parsed.time.split(':').map(Number);\n        const ampm = h >= 12 ? 'PM' : 'AM';\n        const displayHour = h % 12 || 12;\n        const displayMin = m < 10 ? '0' + m : m;\n        displayTime = `${displayHour}:${displayMin} ${ampm}`;\n    } catch (e) {}\n}\n\n// Format date to friendly format\nif (parsed.date && parsed.date.includes('-')) {\n    try {\n        const months = [\"January\", \"February\", \"March\", \"April\", \"May\", \"June\", \n            \"July\", \"August\", \"September\", \"October\", \"November\", \"December\"];\n        const [y, m, d] = parsed.date.split('-').map(Number);\n        let suffix = \"th\";\n        if (d === 1 || d === 21 || d === 31) suffix = \"st\";\n        else if (d === 2 || d === 22) suffix = \"nd\";\n        else if (d === 3 || d === 23) suffix = \"rd\";\n        displayDate = `${months[m - 1]} ${d}${suffix}`;\n    } catch (e) {}\n}\n\nconst customerName = parsed.name || \"there\";\nconst conversationalMessage = `Perfect! I've got you all set up, ${customerName}. Your appointment is officially confirmed for ${displayDate} at ${displayTime}. We look forward to seeing you!`;\n\nreturn [{\n  json: {\n    toolCallId: toolCallId,\n    result: conversationalMessage,\n    // Keep these for Sheet node\n    confirmation_id: created.id || \"unknown_id\",\n    name: parsed.name,\n    phone: parsed.phone,\n    date: parsed.date,\n    time: parsed.time\n  }\n}];"
+      },
+      "id": "8b637993-88ea-4a1d-a158-d84347cf377e",
+      "name": "Code - Format Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        992
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Code - Parse Booking Request').first().json || {};\nconst toolCallId = parsed.toolCallId || \"unknown\";\nconst outsideHours = parsed.outsideBusinessHours || false;\nconst isWeekend = parsed.isWeekend || false;\n\nlet displayTime = parsed.time || \"that time\";\nlet displayDate = parsed.date || \"that day\";\n\n// Format time to 12-hour AM/PM\nif (parsed.time && parsed.time.includes(':')) {\n    try {\n        const [h, m] = parsed.time.split(':').map(Number);\n        const ampm = h >= 12 ? 'PM' : 'AM';\n        const displayHour = h % 12 || 12;\n        const displayMin = m < 10 ? '0' + m : m;\n        displayTime = `${displayHour}:${displayMin} ${ampm}`;\n    } catch (e) {}\n}\n\n// Format date to friendly format\nif (parsed.date && parsed.date.includes('-')) {\n    try {\n        const months = [\"January\", \"February\", \"March\", \"April\", \"May\", \"June\", \n            \"July\", \"August\", \"September\", \"October\", \"November\", \"December\"];\n        const [y, m, d] = parsed.date.split('-').map(Number);\n        let suffix = \"th\";\n        if (d === 1 || d === 21 || d === 31) suffix = \"st\";\n        else if (d === 2 || d === 22) suffix = \"nd\";\n        else if (d === 3 || d === 23) suffix = \"rd\";\n        displayDate = `${months[m - 1]} ${d}${suffix}`;\n    } catch (e) {}\n}\n\n// Construct response based on reason\nlet conversationalMessage = \"\";\nif (outsideHours) {\n    if (isWeekend) {\n        conversationalMessage = `I'm sorry, but we are completely closed on weekends. Our business hours are Monday through Friday from 9:00 AM to 5:00 PM. Would you like to check a weekday instead?`;\n    } else {\n        conversationalMessage = `I'm sorry, but ${displayTime} is outside of our regular business hours. We are open from 9:00 AM to 5:00 PM. Would you like to try another time?`;\n    }\n} else {\n    conversationalMessage = `I'm so sorry, but ${displayTime} on ${displayDate} is actually already booked. Is there another day or time that would work for you?`;\n}\n\nreturn [{\n  json: {\n    results: [{\n      toolCallId: toolCallId,\n      result: conversationalMessage\n    }]\n  }\n}];"
+      },
+      "id": "11187a74-da85-4c0a-8bc0-82bbe9a30356",
+      "name": "Code - Format Conflict Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ results: [{ toolCallId: $('Code - Format Success Response').item.json.toolCallId, result: $('Code - Format Success Response').item.json.result }] }) }}",
+        "options": {}
+      },
+      "id": "0b11b833-9428-4c6b-82d9-6820713eadf6",
+      "name": "Respond - Return Booking Result to Voice Agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2016,
+        912
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "business-info",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9e3ae386-657a-467f-b7ff-2687dac86009",
+      "name": "Webhook - business_info_tool",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        416,
+        1232
+      ],
+      "webhookId": "283b1a8e-5da3-4228-9145-1295fd0c25dc"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || {};\n\n// Debug: log what we received\nconsole.log(\"Raw body:\", JSON.stringify(body));\n\nlet args = {};\nlet toolCallId = \"unknown\";\n\n// Try to extract from Vapi format\ntry {\n    if (body.message && body.message.toolWithToolCallList && body.message.toolWithToolCallList.length > 0) {\n        const toolCall = body.message.toolWithToolCallList[0].toolCall;\n        toolCallId = toolCall.id || \"unknown\";\n        args = toolCall.function.arguments || {};\n    } else if (body.message && body.message.toolCallList && body.message.toolCallList.length > 0) {\n        const toolCall = body.message.toolCallList[0];\n        toolCallId = toolCall.id || \"unknown\";\n        args = toolCall.function ? toolCall.function.arguments : (toolCall.arguments || {});\n    } else {\n        // Direct format\n        args = body;\n        toolCallId = body.toolCallId || \"unknown\";\n    }\n} catch (e) {\n    console.log(\"Extraction error:\", e.message);\n}\n\n// Handle stringified arguments\nif (typeof args === 'string') {\n    try {\n        args = JSON.parse(args);\n    } catch (e) {\n        args = {};\n    }\n}\n\nconsole.log(\"Extracted args:\", JSON.stringify(args));\nconsole.log(\"toolCallId:\", toolCallId);\n\n// Extract query\nlet query = args.query || args.info_type || args.topic || \"\";\n\nif (!query) {\n    const values = Object.values(args);\n    query = values.find(val => typeof val === 'string') || \"\";\n}\n\nconsole.log(\"Query:\", query);\n\nquery = query.toLowerCase();\n\nconst kb = {\n  hours: \"We're open Monday to Friday, 9 AM to 5 PM, and closed on weekends.\",\n  location: \"We're located at 123 Main Street, Suite 4.\",\n  services: \"We offer haircuts, coloring, and styling consultations.\",\n  pricing: \"Pricing varies by service. I can have someone call you back with exact pricing, or you can book a consultation.\"\n};\n\nlet answer = \"I don't have that information, but I can have a team member follow up with you.\";\n\nif (query.includes('hour') || query.includes('open') || query.includes('time') || query.includes('opening')) {\n    answer = kb.hours;\n} else if (query.includes('location') || query.includes('address') || query.includes('where') || query.includes('locate')) {\n    answer = kb.location;\n} else if (query.includes('service') || query.includes('offer') || query.includes('hair')) {\n    answer = kb.services;\n} else if (query.includes('price') || query.includes('cost') || query.includes('much')) {\n    answer = kb.pricing;\n}\n\nconsole.log(\"Answer:\", answer);\n\nreturn [{\n  json: {\n    results: [{\n      toolCallId: toolCallId,\n      result: answer\n    }]\n  }\n}];"
+      },
+      "id": "2b13702b-5ac7-4e4d-bd0d-314c72b869d6",
+      "name": "Code - Knowledge Base Lookup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "f9bd9c51-63cc-445e-b3ba-246dfa059d2e",
+      "name": "Respond - Return Answer to Voice Agent",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        944,
+        1232
+      ]
+    },
+    {
+      "parameters": {
+        "content": " \n**check-availability** ",
+        "height": 80,
+        "width": 150
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        128,
+        592
+      ],
+      "typeVersion": 1,
+      "id": "ac7a6f38-aa87-4e58-a990-ffe4fcf0c714",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": " \n**book-appointment** ",
+        "height": 80,
+        "width": 150
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        80,
+        896
+      ],
+      "typeVersion": 1,
+      "id": "4f96c131-5f0d-455e-b848-5fc8bccd1bb8",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": " \n**business-info** ",
+        "height": 80,
+        "width": 150
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        144,
+        1248
+      ],
+      "typeVersion": 1,
+      "id": "fd503c4e-f586-490c-b6eb-a8dfa01d4049",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": ".",
+        "height": 224,
+        "width": 1648,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        64,
+        512
+      ],
+      "typeVersion": 1,
+      "id": "296f4698-cf1e-4375-8dc1-f6ed47e6fb1d",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 400,
+        "width": 2144,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        64,
+        768
+      ],
+      "typeVersion": 1,
+      "id": "3debef29-45a3-42c0-b17f-a268983e305a",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 224,
+        "width": 1088,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        96,
+        1200
+      ],
+      "typeVersion": 1,
+      "id": "4b6451f5-6bf1-485a-b880-14d96d6e597a",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "https://docs.google.com/spreadsheets/d/1FQTdSuMfEfcAlWMEhK1UaMnswJDU4sFCWV8_HKtu-5c/edit?gid=0#gid=0",
+          "mode": "url"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Phone": "={{ $json.phone }}",
+            "Date": "={{ $json.date }}",
+            "Status": "={{'Waiting'}}",
+            "Start time": "={{ $json.time }}",
+            "End time": "={{ (() => { const [h, m] = $json.time.split(':').map(Number); let endM = m + ($json.durationMinutes || 30); let endH = h + Math.floor(endM / 60); endM = endM % 60; return `${String(endH).padStart(2,'0')}:${String(endM).padStart(2,'0')}` })() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Start time",
+              "displayName": "Start time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "End time",
+              "displayName": "End time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1760,
+        992
+      ],
+      "id": "379c5738-b47b-46eb-9e48-f99bea4ed31f",
+      "name": "Adding appointment details in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "0nSSR5mgtCby9MFa",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - check_availability_tool": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Requested Slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Requested Slot": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar - Get Day's Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar - Get Day's Events": {
+      "main": [
+        [
+          {
+            "node": "Code - Determine Availability",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Determine Availability": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Availability to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - book_appointment_tool": {
+      "main": [
+        [
+          {
+            "node": "Code - Parse Booking Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Parse Booking Request": {
+      "main": [
+        [
+          {
+            "node": "Google Calendar - Conflict Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar - Conflict Check": {
+      "main": [
+        [
+          {
+            "node": "IF - Slot Already Taken",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Slot Already Taken": {
+      "main": [
+        [
+          {
+            "node": "Code - Format Conflict Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Calendar - Create Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Calendar - Create Event": {
+      "main": [
+        [
+          {
+            "node": "Code - Format Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Format Success Response": {
+      "main": [
+        [
+          {
+            "node": "Adding appointment details in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Format Conflict Response": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Booking Result to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook - business_info_tool": {
+      "main": [
+        [
+          {
+            "node": "Code - Knowledge Base Lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code - Knowledge Base Lookup": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Answer to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Adding appointment details in sheet": {
+      "main": [
+        [
+          {
+            "node": "Respond - Return Booking Result to Voice Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "ecb87fd4-7215-4879-909d-974d3c96eadd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "baab2424fa7ffe6fa1dabe3371431902d14a17d94c997e1491674bf6df345811"
+  },
+  "nodeGroups": [],
+  "id": "2GpupaNvj2ixgeph",
+  "tags": []
+}
